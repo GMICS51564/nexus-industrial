@@ -1,0 +1,16 @@
+
+test_benefits_reconcile (__main__.V11Tests.test_benefits_reconcile) ... ok
+test_global_role_duplicate_rejected (__main__.V11Tests.test_global_role_duplicate_rejected) ... ok
+test_inspection_wrong_operation_order_rejected (__main__.V11Tests.test_inspection_wrong_operation_order_rejected) ... ok
+test_integrity_and_foreign_keys (__main__.V11Tests.test_integrity_and_foreign_keys) ... ok
+test_schema_version (__main__.V11Tests.test_schema_version) ... ok
+test_six_week_orders (__main__.V11Tests.test_six_week_orders) ... ok
+test_synthetic_stops_and_deviations_exist (__main__.V11Tests.test_synthetic_stops_and_deviations_exist) ... ok
+test_three_synthetic_ncs (__main__.V11Tests.test_three_synthetic_ncs) ... ok
+test_time_deviation_arithmetic (__main__.V11Tests.test_time_deviation_arithmetic) ... ok
+test_workday_span (__main__.V11Tests.test_workday_span) ... ok
+
+----------------------------------------------------------------------
+Ran 10 tests in 0.021s
+
+OK
