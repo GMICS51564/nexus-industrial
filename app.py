@@ -4,7 +4,12 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="NEXUS Industrial | PILOT V1.4", page_icon="🏭", layout="wide")
+try:
+    from supabase import create_client
+except ImportError:
+    create_client = None
+
+st.set_page_config(page_title="NEXUS Industrial | PILOT + Q-TRACE V1.6", page_icon="🏭", layout="wide")
 
 # Futuristic NEXUS theme
 st.markdown("""
@@ -34,7 +39,7 @@ DB_PATH = Path(__file__).parent / "nexus_industrial_demo_v1_1.sqlite"
 
 st.markdown("### N E X U S  /  INDUSTRIAL INTELLIGENCE")
 st.title("NEXUS INDUSTRIAL")
-st.caption("PILOT + Q-TRACE V1.5  •  PRODUCTION & QUALITY CONTROL")
+st.caption("PILOT + Q-TRACE V1.6  •  PRODUCTION & QUALITY CONTROL")
 
 st.warning("Démonstrateur pédagogique : les données sont synthétiques. Les indicateurs sont calculés à partir des enregistrements disponibles et ne doivent pas servir au pilotage d'une production réelle.")
 
@@ -368,7 +373,95 @@ elif page == "Q-TRACE · Qualité":
         st.markdown("#### Actions correctives associées au système")
         st.dataframe(action_items, use_container_width=True, hide_index=True)
 
-    st.info("Cette version est en consultation. Pour enregistrer de nouveaux défauts depuis l'application et conserver les modifications entre les redéploiements, nous ajouterons ensuite une base hébergée avec authentification et sauvegardes.")
+    st.markdown("---")
+    st.markdown("#### Créer une non-conformité")
+    st.caption("Les nouvelles fiches sont enregistrées dans une base Supabase hébergée. Tant que la connexion n'est pas configurée, le formulaire reste désactivé pour éviter de vous faire croire qu'une fiche est sauvegardée.")
+
+    supabase_client = None
+    try:
+        if create_client is not None and "supabase" in st.secrets:
+            sb_url = st.secrets["supabase"]["url"]
+            sb_key = st.secrets["supabase"]["service_role_key"]
+            if sb_url and sb_key:
+                supabase_client = create_client(sb_url, sb_key)
+    except Exception:
+        supabase_client = None
+
+    if supabase_client is None:
+        st.warning("Enregistrement désactivé : la connexion Supabase n'est pas encore configurée. Suivez le fichier README_INSTRUCTIONS.txt du pack V1.6 avant de saisir des données.")
+    else:
+        with st.form("create_nc_form", clear_on_submit=True):
+            a, b = st.columns(2)
+            nc_ref = a.text_input("Référence", placeholder="Ex. NC-2026-001", max_chars=40)
+            nc_severity = b.selectbox("Gravité", ["Faible", "Moyenne", "Élevée", "Critique"])
+            nc_desc = st.text_area("Description du défaut", placeholder="Décrire le défaut observé…", max_chars=2000)
+            c, d = st.columns(2)
+            nc_origin = c.text_input("Origine / atelier", placeholder="Ex. Atelier A, contrôle final")
+            nc_owner = d.text_input("Responsable", placeholder="Nom ou fonction")
+            e, f = st.columns(2)
+            nc_due = e.date_input("Échéance de traitement")
+            nc_status = f.selectbox("Statut initial", ["Ouverte", "En cours", "En attente"])
+            nc_action = st.text_area("Action corrective prévue", placeholder="Action immédiate ou investigation à lancer…", max_chars=2000)
+            submitted = st.form_submit_button("Enregistrer la non-conformité")
+        if submitted:
+            if not nc_ref.strip() or not nc_desc.strip():
+                st.error("La référence et la description sont obligatoires.")
+            else:
+                payload = {
+                    "reference_code": nc_ref.strip(),
+                    "severity": nc_severity,
+                    "description": nc_desc.strip(),
+                    "origin": nc_origin.strip() or None,
+                    "owner": nc_owner.strip() or None,
+                    "due_date": nc_due.isoformat(),
+                    "status": nc_status,
+                    "corrective_action": nc_action.strip() or None,
+                }
+                try:
+                    supabase_client.table("nexus_nonconformities").insert(payload).execute()
+                    st.success("Non-conformité enregistrée dans Supabase.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("Échec de l'enregistrement. Vérifie que le script SQL V1.6 a été exécuté dans Supabase et que les secrets sont corrects.")
+                    st.caption(str(exc))
+
+        st.markdown("#### Registre des fiches créées dans NEXUS")
+        try:
+            live_result = supabase_client.table("nexus_nonconformities").select("*").order("created_at", desc=True).execute()
+            live_rows = live_result.data or []
+            if live_rows:
+                live_df = pd.DataFrame(live_rows)
+                st.dataframe(live_df.drop(columns=["id"], errors="ignore"), use_container_width=True, hide_index=True)
+                st.download_button("Exporter le registre NEXUS en CSV", live_df.to_csv(index=False).encode("utf-8"), "nexus_nonconformites.csv", "text/csv")
+                st.markdown("#### Mettre à jour le suivi")
+                options = {f"{r['reference_code']} — {r['description'][:55]}": r["id"] for r in live_rows}
+                selected_label = st.selectbox("Fiche à modifier", list(options.keys()))
+                selected_row = next(r for r in live_rows if r["id"] == options[selected_label])
+                with st.form("update_nc_form"):
+                    u1, u2 = st.columns(2)
+                    upd_status = u1.selectbox("Nouveau statut", ["Ouverte", "En cours", "En attente", "Résolue", "Clôturée"], index=["Ouverte", "En cours", "En attente", "Résolue", "Clôturée"].index(selected_row["status"]) if selected_row.get("status") in ["Ouverte", "En cours", "En attente", "Résolue", "Clôturée"] else 0)
+                    upd_owner = u2.text_input("Responsable", value=selected_row.get("owner") or "")
+                    upd_action = st.text_area("Action corrective / commentaire", value=selected_row.get("corrective_action") or "")
+                    upd_done = st.form_submit_button("Enregistrer le suivi")
+                if upd_done:
+                    try:
+                        update_payload = {"status": upd_status, "owner": upd_owner.strip() or None, "corrective_action": upd_action.strip() or None}
+                        if upd_status in ["Résolue", "Clôturée"]:
+                            from datetime import datetime, timezone
+                            update_payload["closed_at"] = datetime.now(timezone.utc).isoformat()
+                        else:
+                            update_payload["closed_at"] = None
+                        supabase_client.table("nexus_nonconformities").update(update_payload).eq("id", options[selected_label]).execute()
+                        st.success("Suivi mis à jour.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error("La mise à jour a échoué. Vérifie la configuration Supabase.")
+                        st.caption(str(exc))
+            else:
+                st.info("Aucune fiche NEXUS créée pour le moment.")
+        except Exception as exc:
+            st.error("Impossible de lire le registre NEXUS. Exécute d'abord le script SQL fourni dans le pack.")
+            st.caption(str(exc))
 
 else:
     st.subheader("Explorateur de données")
@@ -380,4 +473,4 @@ else:
     st.download_button("Télécharger en CSV",df.to_csv(index=False).encode("utf-8"),f"{chosen}.csv","text/csv")
 
 st.divider()
-st.caption("NEXUS Industrial · PILOT V1.4 · Données synthétiques · Indicateurs calculés à partir des enregistrements disponibles")
+st.caption("NEXUS Industrial · PILOT + Q-TRACE V1.6 · Données de démonstration synthétiques · Indicateurs calculés à partir des enregistrements disponibles")
