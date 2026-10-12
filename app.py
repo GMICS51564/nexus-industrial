@@ -375,13 +375,17 @@ elif page == "Q-TRACE · Qualité":
 
     st.markdown("---")
     st.markdown("#### Registre persistant NEXUS")
-    st.caption("Le registre est consultable publiquement pour la démonstration. Les modifications sont réservées à l'administrateur.")
+    st.warning(
+        "MODE TEST PUBLIC : toute personne qui visite cette application peut créer, modifier ou supprimer "
+        "les fiches de démonstration. N'utilise aucune donnée personnelle, confidentielle ou industrielle réelle."
+    )
 
     supabase_client = None
     try:
         if create_client is not None and "supabase" in st.secrets:
             sb_url = st.secrets["supabase"]["url"]
-            sb_key = st.secrets["supabase"]["service_role_key"]
+            # Public/publishable key; permissions are enforced by Supabase RLS.
+            sb_key = st.secrets["supabase"]["publishable_key"]
             if sb_url and sb_key:
                 supabase_client = create_client(sb_url, sb_key)
     except Exception:
@@ -389,7 +393,10 @@ elif page == "Q-TRACE · Qualité":
 
     live_rows = []
     if supabase_client is None:
-        st.warning("Registre persistant non connecté. Configure les secrets Supabase et le mot de passe administrateur dans Streamlit Cloud.")
+        st.warning(
+            "Registre persistant non connecté. Dans Streamlit Cloud > Settings > Secrets, configure "
+            "[supabase] avec url et publishable_key. N'ajoute pas de service_role key."
+        )
     else:
         try:
             live_result = supabase_client.table("nexus_nonconformities").select("*").order("created_at", desc=True).execute()
@@ -399,87 +406,98 @@ elif page == "Q-TRACE · Qualité":
                 st.dataframe(live_df.drop(columns=["id"], errors="ignore"), use_container_width=True, hide_index=True)
                 st.download_button("Exporter le registre NEXUS en CSV", live_df.to_csv(index=False).encode("utf-8"), "nexus_nonconformites.csv", "text/csv")
             else:
-                st.info("Aucune fiche NEXUS créée pour le moment.")
-        except Exception:
-            st.error("Impossible de lire le registre NEXUS. Vérifie que le script SQL a été exécuté et que les secrets sont corrects.")
+                st.info("Aucune fiche NEXUS créée pour le moment. Lance un essai avec le formulaire ci-dessous.")
+        except Exception as exc:
+            st.error(
+                "Impossible de lire le registre. Vérifie que le nouveau script SQL a été exécuté et que "
+                "la clé publishable est correcte. Détail technique : " + str(exc)
+            )
 
-    st.markdown("#### Espace administrateur")
-    if "nexus_admin_authenticated" not in st.session_state:
-        st.session_state.nexus_admin_authenticated = False
-    if not st.session_state.nexus_admin_authenticated:
-        with st.form("nexus_admin_login"):
-            admin_password = st.text_input("Mot de passe administrateur", type="password")
-            login_clicked = st.form_submit_button("Déverrouiller les modifications")
-        if login_clicked:
-            try:
-                expected_password = st.secrets["admin"]["password"]
-            except Exception:
-                expected_password = None
-            if expected_password and admin_password == expected_password:
-                st.session_state.nexus_admin_authenticated = True
-                st.rerun()
-            else:
-                st.error("Mot de passe incorrect ou secret admin non configuré.")
-    else:
-        if st.button("Verrouiller l'espace administrateur"):
-            st.session_state.nexus_admin_authenticated = False
-            st.rerun()
-
+    if supabase_client is not None:
         st.markdown("##### Créer une non-conformité")
-        if supabase_client is None:
-            st.warning("Enregistrement désactivé tant que la connexion Supabase n'est pas configurée.")
-        else:
-            with st.form("create_nc_form", clear_on_submit=True):
-                a, b = st.columns(2)
-                nc_ref = a.text_input("Référence", placeholder="Ex. NC-2026-001", max_chars=40)
-                nc_severity = b.selectbox("Gravité", ["Faible", "Moyenne", "Élevée", "Critique"])
-                nc_desc = st.text_area("Description du défaut", placeholder="Décrire le défaut observé…", max_chars=2000)
-                c, d = st.columns(2)
-                nc_origin = c.text_input("Origine / atelier", placeholder="Ex. Atelier A, contrôle final")
-                nc_owner = d.text_input("Responsable", placeholder="Nom ou fonction")
-                e, f = st.columns(2)
-                nc_due = e.date_input("Échéance de traitement")
-                nc_status = f.selectbox("Statut initial", ["Ouverte", "En cours", "En attente"])
-                nc_action = st.text_area("Action corrective prévue", placeholder="Action immédiate ou investigation à lancer…", max_chars=2000)
-                submitted = st.form_submit_button("Enregistrer la non-conformité")
-            if submitted:
-                if not nc_ref.strip() or not nc_desc.strip():
-                    st.error("La référence et la description sont obligatoires.")
-                else:
-                    payload = {"reference_code": nc_ref.strip(), "severity": nc_severity, "description": nc_desc.strip(), "origin": nc_origin.strip() or None, "owner": nc_owner.strip() or None, "due_date": nc_due.isoformat(), "status": nc_status, "corrective_action": nc_action.strip() or None}
-                    try:
-                        supabase_client.table("nexus_nonconformities").insert(payload).execute()
-                        st.success("Non-conformité enregistrée dans Supabase.")
-                        st.rerun()
-                    except Exception:
-                        st.error("Échec de l'enregistrement. Vérifie le SQL et les secrets Supabase; la référence doit être unique.")
+        with st.form("create_nc_form", clear_on_submit=True):
+            a, b = st.columns(2)
+            nc_ref = a.text_input("Référence", placeholder="Ex. TEST-2026-001", max_chars=40)
+            nc_severity = b.selectbox("Gravité", ["Faible", "Moyenne", "Élevée", "Critique"])
+            nc_desc = st.text_area("Description du défaut", placeholder="Décrire le défaut fictif observé…", max_chars=2000)
+            c, d = st.columns(2)
+            nc_origin = c.text_input("Origine / atelier", placeholder="Ex. Atelier de démonstration")
+            nc_owner = d.text_input("Responsable", placeholder="Nom ou fonction fictive")
+            e, f = st.columns(2)
+            nc_due = e.date_input("Échéance de traitement")
+            nc_status = f.selectbox("Statut initial", ["Ouverte", "En cours", "En attente"])
+            nc_action = st.text_area("Action corrective prévue", placeholder="Action à tester…", max_chars=2000)
+            submitted = st.form_submit_button("Créer la fiche publique")
+        if submitted:
+            if not nc_ref.strip() or not nc_desc.strip():
+                st.error("La référence et la description sont obligatoires.")
+            else:
+                payload = {
+                    "reference_code": nc_ref.strip(),
+                    "severity": nc_severity,
+                    "description": nc_desc.strip(),
+                    "origin": nc_origin.strip() or None,
+                    "owner": nc_owner.strip() or None,
+                    "due_date": nc_due.isoformat(),
+                    "status": nc_status,
+                    "corrective_action": nc_action.strip() or None
+                }
+                try:
+                    supabase_client.table("nexus_nonconformities").insert(payload).execute()
+                    st.success("Fiche créée et enregistrée dans Supabase.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("Création impossible. Vérifie que la référence est unique et que les règles SQL publiques sont activées. Détail : " + str(exc))
 
-            if live_rows:
-                st.markdown("##### Mettre à jour le suivi")
-                options = {f"{r['reference_code']} — {r['description'][:55]}": r["id"] for r in live_rows}
-                selected_label = st.selectbox("Fiche à modifier", list(options.keys()))
-                selected_row = next(r for r in live_rows if r["id"] == options[selected_label])
-                with st.form("update_nc_form"):
-                    u1, u2 = st.columns(2)
-                    statuses = ["Ouverte", "En cours", "En attente", "Résolue", "Clôturée"]
-                    current_status = selected_row.get("status") if selected_row.get("status") in statuses else "Ouverte"
-                    upd_status = u1.selectbox("Nouveau statut", statuses, index=statuses.index(current_status))
-                    upd_owner = u2.text_input("Responsable", value=selected_row.get("owner") or "")
-                    upd_action = st.text_area("Action corrective / commentaire", value=selected_row.get("corrective_action") or "")
-                    upd_done = st.form_submit_button("Enregistrer le suivi")
-                if upd_done:
-                    try:
-                        update_payload = {"status": upd_status, "owner": upd_owner.strip() or None, "corrective_action": upd_action.strip() or None}
-                        if upd_status in ["Résolue", "Clôturée"]:
-                            from datetime import datetime, timezone
-                            update_payload["closed_at"] = datetime.now(timezone.utc).isoformat()
-                        else:
-                            update_payload["closed_at"] = None
+        if live_rows:
+            st.markdown("##### Modifier une fiche existante")
+            options = {f"{r['reference_code']} — {str(r['description'])[:55]}": r["id"] for r in live_rows}
+            selected_label = st.selectbox("Fiche à modifier", list(options.keys()))
+            selected_row = next(r for r in live_rows if r["id"] == options[selected_label])
+            with st.form("update_nc_form"):
+                u1, u2 = st.columns(2)
+                statuses = ["Ouverte", "En cours", "En attente", "Résolue", "Clôturée"]
+                current_status = selected_row.get("status") if selected_row.get("status") in statuses else "Ouverte"
+                upd_status = u1.selectbox("Statut", statuses, index=statuses.index(current_status))
+                severity_options = ["Faible", "Moyenne", "Élevée", "Critique"]
+                current_severity = selected_row.get("severity") if selected_row.get("severity") in severity_options else "Moyenne"
+                upd_severity = u2.selectbox("Gravité", severity_options, index=severity_options.index(current_severity))
+                upd_desc = st.text_area("Description", value=selected_row.get("description") or "", max_chars=2000)
+                upd_owner = st.text_input("Responsable", value=selected_row.get("owner") or "")
+                upd_origin = st.text_input("Origine / atelier", value=selected_row.get("origin") or "")
+                upd_action = st.text_area("Action corrective / commentaire", value=selected_row.get("corrective_action") or "", max_chars=2000)
+                upd_done = st.form_submit_button("Enregistrer les modifications")
+            if upd_done:
+                try:
+                    from datetime import datetime, timezone
+                    update_payload = {
+                        "status": upd_status,
+                        "severity": upd_severity,
+                        "description": upd_desc.strip(),
+                        "owner": upd_owner.strip() or None,
+                        "origin": upd_origin.strip() or None,
+                        "corrective_action": upd_action.strip() or None,
+                        "closed_at": datetime.now(timezone.utc).isoformat() if upd_status in ["Résolue", "Clôturée"] else None
+                    }
+                    if not update_payload["description"]:
+                        st.error("La description ne peut pas être vide.")
+                    else:
                         supabase_client.table("nexus_nonconformities").update(update_payload).eq("id", options[selected_label]).execute()
-                        st.success("Suivi mis à jour.")
+                        st.success("Fiche mise à jour.")
                         st.rerun()
-                    except Exception:
-                        st.error("La mise à jour a échoué. Vérifie la configuration Supabase.")
+                except Exception as exc:
+                    st.error("La modification a échoué. Vérifie les règles SQL publiques. Détail : " + str(exc))
+
+            st.markdown("##### Supprimer une fiche de test")
+            st.caption("La suppression est définitive. N'utilise cette action que pour nettoyer des fiches fictives.")
+            confirm_delete = st.checkbox("Je confirme vouloir supprimer cette fiche de démonstration.")
+            if st.button("Supprimer la fiche sélectionnée", disabled=not confirm_delete):
+                try:
+                    supabase_client.table("nexus_nonconformities").delete().eq("id", options[selected_label]).execute()
+                    st.success("Fiche supprimée.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error("La suppression a échoué. Vérifie les règles SQL publiques. Détail : " + str(exc))
 
 else:
     st.subheader("Explorateur de données")
