@@ -9,7 +9,7 @@ try:
 except ImportError:
     create_client = None
 
-st.set_page_config(page_title="NEXUS Industrial | PILOT + Q-TRACE + CAPAX + ORION V1.7", page_icon="🏭", layout="wide")
+st.set_page_config(page_title="NEXUS Industrial | PILOT + Q-TRACE + CAPAX + ORION V2.0", page_icon="🏭", layout="wide")
 
 # Futuristic NEXUS theme
 st.markdown("""
@@ -39,7 +39,7 @@ DB_PATH = Path(__file__).parent / "nexus_industrial_demo_v1_1.sqlite"
 
 st.markdown("### N E X U S  /  INDUSTRIAL INTELLIGENCE")
 st.title("NEXUS INDUSTRIAL")
-st.caption("PILOT + Q-TRACE + CAPAX + ORION V1.7  •  PRODUCTION • QUALITY • MAINTENANCE • ANALYTICS")
+st.caption("PILOT + Q-TRACE + CAPAX + ORION V2.0  •  PRODUCTION • QUALITY • MAINTENANCE • ANALYTICS")
 
 st.warning("Démonstrateur pédagogique : les données sont synthétiques. Les indicateurs sont calculés à partir des enregistrements disponibles et ne doivent pas servir au pilotage d'une production réelle.")
 
@@ -242,7 +242,7 @@ def audit_public_event(client, module, action, record_ref, details):
         # Don't fail the user's primary action if the audit table is unavailable.
         pass
 
-pages = ["Vue générale", "PILOT · Production", "Retards & écarts", "Arrêts", "Q-TRACE · Qualité", "CAPAX · Maintenance", "ORION · Analyse", "Données brutes"]
+pages = ["Vue générale", "PILOT · Production", "Retards & écarts", "Arrêts", "Q-TRACE · Qualité", "CAPAX · Maintenance", "ORION · Analyse", "Actions & journal", "Données brutes"]
 page = st.sidebar.radio("Navigation", pages)
 
 if page == "Vue générale":
@@ -456,12 +456,20 @@ elif page == "Q-TRACE · Qualité":
             )
 
     if supabase_client is not None:
+        # Charger les équipements pour créer une vraie relation par identifiant, pas seulement un code texte.
+        equipment_rows = []
+        try:
+            equipment_rows = supabase_client.table("capax_equipment").select("id,asset_code,name").order("asset_code").execute().data or []
+        except Exception:
+            equipment_rows = []
+        equipment_options = {f"{r['asset_code']} — {r['name']}": r for r in equipment_rows}
         st.markdown("##### Créer une non-conformité")
         with st.form("create_nc_form", clear_on_submit=True):
             a, b = st.columns(2)
             nc_ref = a.text_input("Référence", placeholder="Ex. TEST-2026-001", max_chars=40)
             nc_severity = b.selectbox("Gravité", ["Faible", "Moyenne", "Élevée", "Critique"])
             nc_desc = st.text_area("Description du défaut", placeholder="Décrire le défaut fictif observé…", max_chars=2000)
+            nc_equipment_label = st.selectbox("Équipement concerné (facultatif)", ["Aucun équipement lié"] + list(equipment_options.keys()))
             c, d = st.columns(2)
             nc_origin = c.text_input("Origine / atelier", placeholder="Ex. Atelier de démonstration")
             nc_owner = d.text_input("Responsable", placeholder="Nom ou fonction fictive")
@@ -482,7 +490,8 @@ elif page == "Q-TRACE · Qualité":
                     "owner": nc_owner.strip() or None,
                     "due_date": nc_due.isoformat(),
                     "status": nc_status,
-                    "corrective_action": nc_action.strip() or None
+                    "corrective_action": nc_action.strip() or None,
+                    "equipment_id": equipment_options[nc_equipment_label]["id"] if nc_equipment_label in equipment_options else None
                 }
                 try:
                     supabase_client.table("nexus_nonconformities").insert(payload).execute()
@@ -508,6 +517,12 @@ elif page == "Q-TRACE · Qualité":
                 upd_desc = st.text_area("Description", value=selected_row.get("description") or "", max_chars=2000)
                 upd_owner = st.text_input("Responsable", value=selected_row.get("owner") or "")
                 upd_origin = st.text_input("Origine / atelier", value=selected_row.get("origin") or "")
+                from datetime import date
+                try:
+                    current_due = date.fromisoformat(str(selected_row.get("due_date"))) if selected_row.get("due_date") else date.today()
+                except Exception:
+                    current_due = date.today()
+                upd_due = st.date_input("Échéance", value=current_due, key="qtrace_due_edit")
                 upd_action = st.text_area("Action corrective / commentaire", value=selected_row.get("corrective_action") or "", max_chars=2000)
                 upd_done = st.form_submit_button("Enregistrer les modifications")
             if upd_done:
@@ -519,6 +534,7 @@ elif page == "Q-TRACE · Qualité":
                         "description": upd_desc.strip(),
                         "owner": upd_owner.strip() or None,
                         "origin": upd_origin.strip() or None,
+                        "due_date": upd_due.isoformat(),
                         "corrective_action": upd_action.strip() or None,
                         "closed_at": datetime.now(timezone.utc).isoformat() if upd_status in ["Résolue", "Clôturée"] else None
                     }
@@ -557,7 +573,7 @@ elif page == "CAPAX · Maintenance":
             assets = sb.table("capax_equipment").select("*").order("created_at", desc=True).execute().data or []
             jobs = sb.table("capax_work_orders").select("*").order("created_at", desc=True).execute().data or []
         except Exception as exc:
-            st.error("Les tables CAPAX ne sont pas encore accessibles. Exécute le fichier SQL du pack V1.7 dans Supabase. Détail : " + str(exc))
+            st.error("Les tables CAPAX ne sont pas encore accessibles. Exécute `supabase_nexus_v2_0_migration.sql` dans Supabase. Détail : " + str(exc))
         m1,m2,m3 = st.columns(3)
         m1.metric("Équipements enregistrés", len(assets))
         m2.metric("Interventions", len(jobs))
@@ -604,8 +620,15 @@ elif page == "CAPAX · Maintenance":
                     audit_public_event(sb,"CAPAX","UPDATE_ASSET",chosen_asset["asset_code"],updated_asset_state)
                     st.success("Équipement mis à jour."); st.rerun()
                 except Exception as exc: st.error("Modification impossible : "+str(exc))
+            delete_asset_confirm=st.checkbox("Confirmer la suppression de cet équipement fictif",key="capax_delete_asset_confirm")
+            if st.button("Supprimer cet équipement",disabled=not delete_asset_confirm,key="capax_delete_asset_btn"):
+                try:
+                    sb.table("capax_equipment").delete().eq("id",chosen_asset["id"]).execute()
+                    audit_public_event(sb,"CAPAX","DELETE_ASSET",chosen_asset["asset_code"],"Suppression équipement de démonstration")
+                    st.success("Équipement supprimé."); st.rerun()
+                except Exception as exc: st.error("Suppression impossible. Vérifie si des interventions y sont liées. Détail : "+str(exc))
         st.markdown("#### Interventions de maintenance")
-        asset_choices={f"{x['asset_code']} — {x['name']}":x["asset_code"] for x in assets}
+        asset_choices={f"{x['asset_code']} — {x['name']}": x for x in assets}
         with st.form("capax_job_create",clear_on_submit=True):
             j1,j2=st.columns(2)
             job_ref=j1.text_input("Référence intervention",placeholder="WO-TEST-001")
@@ -624,7 +647,9 @@ elif page == "CAPAX · Maintenance":
             else:
                 try:
                     sb.table("capax_work_orders").insert({
-                        "work_order_code":job_ref.strip(),"asset_code":asset_choices.get(job_asset),
+                        "work_order_code":job_ref.strip(),
+                        "asset_code":asset_choices.get(job_asset, {}).get("asset_code"),
+                        "equipment_id":asset_choices.get(job_asset, {}).get("id"),
                         "work_type":job_type,"priority":job_priority,"status":job_status,
                         "owner":job_owner.strip() or None,"description":job_desc.strip(),"due_date":job_due.isoformat()
                     }).execute()
@@ -649,6 +674,114 @@ elif page == "CAPAX · Maintenance":
                     audit_public_event(sb,"CAPAX","UPDATE_WORK_ORDER",chosen_job["work_order_code"],new_job_status)
                     st.success("Intervention mise à jour."); st.rerun()
                 except Exception as exc: st.error("Modification impossible : "+str(exc))
+            delete_job_confirm=st.checkbox("Confirmer la suppression de cette intervention fictive",key="capax_delete_job_confirm")
+            if st.button("Supprimer cette intervention",disabled=not delete_job_confirm,key="capax_delete_job_btn"):
+                try:
+                    sb.table("capax_work_orders").delete().eq("id",chosen_job["id"]).execute()
+                    audit_public_event(sb,"CAPAX","DELETE_WORK_ORDER",chosen_job["work_order_code"],"Suppression intervention de démonstration")
+                    st.success("Intervention supprimée."); st.rerun()
+                except Exception as exc: st.error("Suppression impossible : "+str(exc))
+
+elif page == "Actions & journal":
+    st.subheader("Actions correctives & journal de traçabilité")
+    st.caption("Registre public de démonstration : les actions et les événements sont visibles par tous.")
+    st.warning("Les fiches peuvent être modifiées par tous les visiteurs. Le journal est utile pour la démonstration, mais n'est pas inviolable et n'identifie pas les auteurs.")
+    sb = get_supabase_client()
+    if sb is None:
+        st.error("Connexion Supabase indisponible. Vérifie Settings → Secrets.")
+    else:
+        action_rows, audit_rows, nc_rows = [], [], []
+        try:
+            action_rows = sb.table("nexus_corrective_actions").select("*").order("created_at", desc=True).execute().data or []
+        except Exception as exc:
+            st.error("Table des actions indisponible. Exécute le SQL V1.8. Détail : " + str(exc))
+        try:
+            audit_rows = sb.table("nexus_audit_log").select("*").order("created_at", desc=True).limit(200).execute().data or []
+        except Exception:
+            audit_rows = []
+        try:
+            nc_rows = sb.table("nexus_nonconformities").select("id,reference_code,description,status").order("created_at", desc=True).execute().data or []
+        except Exception:
+            nc_rows = []
+        a,b,c = st.columns(3)
+        a.metric("Actions correctives", len(action_rows))
+        b.metric("Actions non terminées", sum(1 for r in action_rows if r.get("status") not in ["Terminée","Clôturée"]))
+        c.metric("Événements journalisés (200 max)", len(audit_rows))
+        st.markdown("#### Créer une action corrective")
+        nc_by_ref = {r.get("reference_code", ""): r for r in nc_rows}
+        nc_refs = list(nc_by_ref.keys())
+        with st.form("nexus_action_create", clear_on_submit=True):
+            x1,x2 = st.columns(2)
+            action_ref = x1.text_input("Référence action", placeholder="AC-TEST-001")
+            linked_nc = x2.selectbox("Non-conformité liée", ["Aucune"] + nc_refs)
+            action_title = st.text_input("Intitulé", placeholder="Vérifier le réglage de démonstration")
+            action_desc = st.text_area("Description / preuve attendue", max_chars=2000)
+            x3,x4,x5 = st.columns(3)
+            action_owner = x3.text_input("Responsable", placeholder="Équipe de démonstration")
+            action_status = x4.selectbox("Statut", ["À faire","En cours","En attente","Terminée","Clôturée"])
+            action_priority = x5.selectbox("Priorité", ["Basse","Normale","Haute","Critique"])
+            action_due = st.date_input("Échéance de l'action")
+            action_create = st.form_submit_button("Créer l'action corrective")
+        if action_create:
+            if not action_ref.strip() or not action_title.strip():
+                st.error("La référence et l'intitulé sont obligatoires.")
+            else:
+                try:
+                    selected_nc = None if linked_nc == "Aucune" else nc_by_ref[linked_nc]
+                    action_payload = {
+                        "action_code": action_ref.strip(),
+                        "nc_reference": selected_nc.get("reference_code") if selected_nc else None,
+                        "nonconformity_id": selected_nc.get("id") if selected_nc else None,
+                        "title": action_title.strip(),
+                        "description": action_desc.strip() or None,
+                        "owner": action_owner.strip() or None,
+                        "status": action_status,
+                        "priority": action_priority,
+                        "due_date": action_due.isoformat()
+                    }
+                    created_action = sb.table("nexus_corrective_actions").insert(action_payload).select("id").execute().data or []
+                    if selected_nc and created_action:
+                        sb.table("nexus_action_links").insert({
+                            "action_id": created_action[0]["id"],
+                            "nonconformity_id": selected_nc["id"]
+                        }).execute()
+                    audit_public_event(sb,"ACTIONS","CREATE",action_ref,action_title)
+                    st.success("Action corrective créée."); st.rerun()
+                except Exception as exc:
+                    st.error("Création impossible : vérifie l'unicité de la référence et les règles SQL. Détail : "+str(exc))
+        if action_rows:
+            st.markdown("#### Registre des actions")
+            adf = pd.DataFrame(action_rows)
+            st.dataframe(adf.drop(columns=["id"],errors="ignore"),use_container_width=True,hide_index=True)
+            st.download_button("Exporter les actions en CSV",adf.to_csv(index=False).encode("utf-8"),"nexus_actions_correctives.csv","text/csv")
+            alabels = {f"{r['action_code']} — {r['title']}":r for r in action_rows}
+            alabel = st.selectbox("Action à mettre à jour",list(alabels.keys()))
+            ar = alabels[alabel]
+            with st.form("nexus_action_update"):
+                status_opts=["À faire","En cours","En attente","Terminée","Clôturée"]
+                pri_opts=["Basse","Normale","Haute","Critique"]
+                oldst=ar.get("status") if ar.get("status") in status_opts else "À faire"
+                oldpri=ar.get("priority") if ar.get("priority") in pri_opts else "Normale"
+                newst=st.selectbox("Nouveau statut",status_opts,index=status_opts.index(oldst))
+                newpri=st.selectbox("Nouvelle priorité",pri_opts,index=pri_opts.index(oldpri))
+                newowner=st.text_input("Responsable",value=ar.get("owner") or "")
+                newdesc=st.text_area("Description / preuve",value=ar.get("description") or "")
+                update_action=st.form_submit_button("Enregistrer l'action")
+            if update_action:
+                try:
+                    sb.table("nexus_corrective_actions").update({
+                        "status":newst,"priority":newpri,"owner":newowner.strip() or None,"description":newdesc.strip() or None
+                    }).eq("id",ar["id"]).execute()
+                    audit_public_event(sb,"ACTIONS","UPDATE",ar["action_code"],newst)
+                    st.success("Action mise à jour."); st.rerun()
+                except Exception as exc: st.error("Modification impossible : "+str(exc))
+        st.markdown("#### Journal de traçabilité")
+        if audit_rows:
+            audit_df=pd.DataFrame(audit_rows)
+            st.dataframe(audit_df.drop(columns=["id"],errors="ignore"),use_container_width=True,hide_index=True)
+            st.download_button("Exporter le journal CSV",audit_df.to_csv(index=False).encode("utf-8"),"nexus_journal.csv","text/csv")
+        else:
+            st.info("Aucun événement disponible ou la table du journal n'est pas accessible.")
 
 elif page == "ORION · Analyse":
     st.subheader("ORION · Analyse industrielle")
@@ -701,4 +834,4 @@ else:
     st.download_button("Télécharger en CSV",df.to_csv(index=False).encode("utf-8"),f"{chosen}.csv","text/csv")
 
 st.divider()
-st.caption("NEXUS Industrial · PILOT + Q-TRACE + CAPAX + ORION V1.7 · Données de démonstration synthétiques · Indicateurs calculés à partir des enregistrements disponibles")
+st.caption("NEXUS Industrial · PILOT + Q-TRACE + CAPAX + ORION V1.8 · Données de démonstration synthétiques · Indicateurs calculés à partir des enregistrements disponibles")
