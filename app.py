@@ -9,7 +9,7 @@ try:
 except ImportError:
     create_client = None
 
-st.set_page_config(page_title="NEXUS Industrial | PILOT + Q-TRACE V1.6", page_icon="🏭", layout="wide")
+st.set_page_config(page_title="NEXUS Industrial | PILOT + Q-TRACE + CAPAX + ORION V1.7", page_icon="🏭", layout="wide")
 
 # Futuristic NEXUS theme
 st.markdown("""
@@ -39,7 +39,7 @@ DB_PATH = Path(__file__).parent / "nexus_industrial_demo_v1_1.sqlite"
 
 st.markdown("### N E X U S  /  INDUSTRIAL INTELLIGENCE")
 st.title("NEXUS INDUSTRIAL")
-st.caption("PILOT + Q-TRACE V1.6  •  PRODUCTION & QUALITY CONTROL")
+st.caption("PILOT + Q-TRACE + CAPAX + ORION V1.7  •  PRODUCTION • QUALITY • MAINTENANCE • ANALYTICS")
 
 st.warning("Démonstrateur pédagogique : les données sont synthétiques. Les indicateurs sont calculés à partir des enregistrements disponibles et ne doivent pas servir au pilotage d'une production réelle.")
 
@@ -216,11 +216,47 @@ filtered_exec = executions[executions["planned_operation_id"].astype(str).isin(o
 filtered_events = events[events["planned_operation_id"].astype(str).isin(op_ids)].copy() if not events.empty else pd.DataFrame()
 filtered_deviations = deviations[deviations["planned_operation_id"].astype(str).isin(op_ids)].copy() if not deviations.empty else pd.DataFrame()
 
-pages = ["Vue générale", "PILOT · Production", "Retards & écarts", "Arrêts", "Q-TRACE · Qualité", "Données brutes"]
+def get_supabase_client():
+    """Client Supabase avec la clé publishable; les droits sont définis par les policies RLS."""
+    try:
+        if create_client is not None and "supabase" in st.secrets:
+            url = st.secrets["supabase"]["url"]
+            key = st.secrets["supabase"]["publishable_key"]
+            if url and key:
+                return create_client(url, key)
+    except Exception:
+        return None
+    return None
+
+def audit_public_event(client, module, action, record_ref, details):
+    """Journal d'audit best-effort. Le registre reste une démo publique, sans identité vérifiée."""
+    try:
+        if client is not None:
+            client.table("nexus_audit_log").insert({
+                "module": module,
+                "action": action,
+                "record_ref": str(record_ref),
+                "details": str(details)[:1000]
+            }).execute()
+    except Exception:
+        # Don't fail the user's primary action if the audit table is unavailable.
+        pass
+
+pages = ["Vue générale", "PILOT · Production", "Retards & écarts", "Arrêts", "Q-TRACE · Qualité", "CAPAX · Maintenance", "ORION · Analyse", "Données brutes"]
 page = st.sidebar.radio("Navigation", pages)
 
 if page == "Vue générale":
-    st.subheader("Vue générale")
+    st.subheader("Vue générale · Centre de pilotage intégré")
+    st.caption("Vue consolidée PILOT + Q-TRACE + CAPAX + ORION. Les données restent synthétiques et publiques.")
+    sb_global = get_supabase_client()
+    global_nc, global_assets, global_jobs = [], [], []
+    if sb_global is not None:
+        try: global_nc = sb_global.table("nexus_nonconformities").select("*").execute().data or []
+        except Exception: pass
+        try: global_assets = sb_global.table("capax_equipment").select("*").execute().data or []
+        except Exception: pass
+        try: global_jobs = sb_global.table("capax_work_orders").select("*").execute().data or []
+        except Exception: pass
     a,b,c,d = st.columns(4)
     a.metric("Ordres filtrés", len(filtered))
     b.metric("Terminés", int((filtered["status"].astype(str).str.lower()=="completed").sum()))
@@ -233,6 +269,12 @@ if page == "Vue générale":
     f2 = filtered["actual_execution_hours"].dropna()
     g.metric("Temps prévu (h)", fmt(f1.sum(),1) if not f1.empty else "—")
     h.metric("Temps réel enregistré (h)", fmt(f2.sum(),1) if not f2.empty else "—")
+    st.markdown("#### État des modules connectés")
+    q1,q2,q3,q4 = st.columns(4)
+    q1.metric("Q-TRACE · Non-conformités", len(global_nc))
+    q2.metric("CAPAX · Équipements", len(global_assets))
+    q3.metric("CAPAX · Interventions", len(global_jobs))
+    q4.metric("CAPAX · Interventions ouvertes", sum(1 for x in global_jobs if x.get("status") not in ["Terminée","Clôturée"]))
     left,right = st.columns(2)
     with left:
         st.markdown("#### Ordres par statut")
@@ -444,6 +486,7 @@ elif page == "Q-TRACE · Qualité":
                 }
                 try:
                     supabase_client.table("nexus_nonconformities").insert(payload).execute()
+                    audit_public_event(supabase_client, "Q-TRACE", "CREATE", payload["reference_code"], payload["description"])
                     st.success("Fiche créée et enregistrée dans Supabase.")
                     st.rerun()
                 except Exception as exc:
@@ -483,6 +526,7 @@ elif page == "Q-TRACE · Qualité":
                         st.error("La description ne peut pas être vide.")
                     else:
                         supabase_client.table("nexus_nonconformities").update(update_payload).eq("id", options[selected_label]).execute()
+                        audit_public_event(supabase_client, "Q-TRACE", "UPDATE", selected_row.get("reference_code", options[selected_label]), f"Statut={upd_status}; gravité={upd_severity}")
                         st.success("Fiche mise à jour.")
                         st.rerun()
                 except Exception as exc:
@@ -494,10 +538,158 @@ elif page == "Q-TRACE · Qualité":
             if st.button("Supprimer la fiche sélectionnée", disabled=not confirm_delete):
                 try:
                     supabase_client.table("nexus_nonconformities").delete().eq("id", options[selected_label]).execute()
+                    audit_public_event(supabase_client, "Q-TRACE", "DELETE", selected_row.get("reference_code", options[selected_label]), "Suppression d'une fiche de démonstration")
                     st.success("Fiche supprimée.")
                     st.rerun()
                 except Exception as exc:
                     st.error("La suppression a échoué. Vérifie les règles SQL publiques. Détail : " + str(exc))
+
+elif page == "CAPAX · Maintenance":
+    st.subheader("CAPAX · Maintenance & interventions")
+    st.caption("Registre public de démonstration : les visiteurs peuvent créer et modifier des équipements et interventions fictifs.")
+    st.warning("Données synthétiques uniquement. Tout visiteur peut ajouter, modifier ou supprimer les fiches visibles.")
+    sb = get_supabase_client()
+    if sb is None:
+        st.error("Connexion Supabase indisponible. Vérifie Settings → Secrets.")
+    else:
+        assets, jobs = [], []
+        try:
+            assets = sb.table("capax_equipment").select("*").order("created_at", desc=True).execute().data or []
+            jobs = sb.table("capax_work_orders").select("*").order("created_at", desc=True).execute().data or []
+        except Exception as exc:
+            st.error("Les tables CAPAX ne sont pas encore accessibles. Exécute le fichier SQL du pack V1.7 dans Supabase. Détail : " + str(exc))
+        m1,m2,m3 = st.columns(3)
+        m1.metric("Équipements enregistrés", len(assets))
+        m2.metric("Interventions", len(jobs))
+        m3.metric("Interventions ouvertes", sum(1 for x in jobs if x.get("status") not in ["Terminée","Clôturée"]))
+        st.markdown("#### Parc équipements")
+        with st.form("capax_asset_create", clear_on_submit=True):
+            c1,c2 = st.columns(2)
+            asset_code = c1.text_input("Code équipement", placeholder="EQ-TEST-001")
+            asset_name = c2.text_input("Nom de l'équipement", placeholder="Convoyeur de démonstration")
+            c3,c4,c5 = st.columns(3)
+            asset_area = c3.text_input("Atelier / zone", placeholder="Atelier A")
+            asset_criticality = c4.selectbox("Criticité", ["Faible","Moyenne","Élevée","Critique"])
+            asset_state = c5.selectbox("État", ["Opérationnel","Dégradé","À l'arrêt","En maintenance"])
+            asset_note = st.text_area("Notes de maintenance", max_chars=1000)
+            asset_submit = st.form_submit_button("Ajouter l'équipement")
+        if asset_submit:
+            if not asset_code.strip() or not asset_name.strip():
+                st.error("Le code et le nom sont obligatoires.")
+            else:
+                try:
+                    sb.table("capax_equipment").insert({
+                        "asset_code":asset_code.strip(),"name":asset_name.strip(),"area":asset_area.strip() or None,
+                        "criticality":asset_criticality,"status":asset_state,"notes":asset_note.strip() or None
+                    }).execute()
+                    audit_public_event(sb,"CAPAX","CREATE_ASSET",asset_code,asset_name)
+                    st.success("Équipement ajouté."); st.rerun()
+                except Exception as exc: st.error("Ajout impossible (code potentiellement déjà utilisé). Détail : "+str(exc))
+        if assets:
+            asset_df=pd.DataFrame(assets)
+            st.dataframe(asset_df.drop(columns=["id"],errors="ignore"),use_container_width=True,hide_index=True)
+            st.download_button("Exporter le parc équipements CSV",asset_df.to_csv(index=False).encode("utf-8"),"capax_equipements.csv","text/csv")
+            labels={f"{x['asset_code']} — {x['name']}":x for x in assets}
+            chosen_asset_label=st.selectbox("Équipement à modifier",list(labels.keys()),key="capax_asset_pick")
+            chosen_asset=labels[chosen_asset_label]
+            with st.form("capax_asset_update"):
+                u1,u2=st.columns(2)
+                updated_asset_state=u1.selectbox("Nouvel état",["Opérationnel","Dégradé","À l'arrêt","En maintenance"],index=["Opérationnel","Dégradé","À l'arrêt","En maintenance"].index(chosen_asset.get("status") if chosen_asset.get("status") in ["Opérationnel","Dégradé","À l'arrêt","En maintenance"] else "Opérationnel"))
+                updated_asset_criticality=u2.selectbox("Nouvelle criticité",["Faible","Moyenne","Élevée","Critique"],index=["Faible","Moyenne","Élevée","Critique"].index(chosen_asset.get("criticality") if chosen_asset.get("criticality") in ["Faible","Moyenne","Élevée","Critique"] else "Moyenne"))
+                updated_asset_notes=st.text_area("Notes",value=chosen_asset.get("notes") or "")
+                update_asset_submit=st.form_submit_button("Enregistrer les modifications équipement")
+            if update_asset_submit:
+                try:
+                    sb.table("capax_equipment").update({"status":updated_asset_state,"criticality":updated_asset_criticality,"notes":updated_asset_notes.strip() or None}).eq("id",chosen_asset["id"]).execute()
+                    audit_public_event(sb,"CAPAX","UPDATE_ASSET",chosen_asset["asset_code"],updated_asset_state)
+                    st.success("Équipement mis à jour."); st.rerun()
+                except Exception as exc: st.error("Modification impossible : "+str(exc))
+        st.markdown("#### Interventions de maintenance")
+        asset_choices={f"{x['asset_code']} — {x['name']}":x["asset_code"] for x in assets}
+        with st.form("capax_job_create",clear_on_submit=True):
+            j1,j2=st.columns(2)
+            job_ref=j1.text_input("Référence intervention",placeholder="WO-TEST-001")
+            job_asset=j2.selectbox("Équipement associé",["Non affecté"]+list(asset_choices.keys()))
+            j3,j4,j5=st.columns(3)
+            job_type=j3.selectbox("Type",["Préventive","Corrective","Améliorative","Inspection"])
+            job_priority=j4.selectbox("Priorité",["Basse","Normale","Haute","Urgente"])
+            job_status=j5.selectbox("Statut",["À planifier","Planifiée","En cours","En attente","Terminée"])
+            job_owner=st.text_input("Technicien / responsable",placeholder="Équipe maintenance")
+            job_desc=st.text_area("Description / travail prévu",max_chars=2000)
+            job_due=st.date_input("Date cible")
+            job_submit=st.form_submit_button("Créer l'intervention")
+        if job_submit:
+            if not job_ref.strip() or not job_desc.strip():
+                st.error("La référence et la description sont obligatoires.")
+            else:
+                try:
+                    sb.table("capax_work_orders").insert({
+                        "work_order_code":job_ref.strip(),"asset_code":asset_choices.get(job_asset),
+                        "work_type":job_type,"priority":job_priority,"status":job_status,
+                        "owner":job_owner.strip() or None,"description":job_desc.strip(),"due_date":job_due.isoformat()
+                    }).execute()
+                    audit_public_event(sb,"CAPAX","CREATE_WORK_ORDER",job_ref,job_desc)
+                    st.success("Intervention enregistrée."); st.rerun()
+                except Exception as exc: st.error("Création impossible (référence potentiellement déjà utilisée). Détail : "+str(exc))
+        if jobs:
+            job_df=pd.DataFrame(jobs)
+            st.dataframe(job_df.drop(columns=["id"],errors="ignore"),use_container_width=True,hide_index=True)
+            st.download_button("Exporter les interventions CSV",job_df.to_csv(index=False).encode("utf-8"),"capax_interventions.csv","text/csv")
+            job_labels={f"{x['work_order_code']} — {x['status']}":x for x in jobs}
+            chosen_job_label=st.selectbox("Intervention à modifier",list(job_labels.keys()),key="capax_job_pick")
+            chosen_job=job_labels[chosen_job_label]
+            with st.form("capax_job_update"):
+                new_job_status=st.selectbox("Nouveau statut",["À planifier","Planifiée","En cours","En attente","Terminée","Clôturée"],index=["À planifier","Planifiée","En cours","En attente","Terminée","Clôturée"].index(chosen_job.get("status") if chosen_job.get("status") in ["À planifier","Planifiée","En cours","En attente","Terminée","Clôturée"] else "À planifier"))
+                new_job_owner=st.text_input("Responsable",value=chosen_job.get("owner") or "")
+                new_job_note=st.text_area("Description",value=chosen_job.get("description") or "")
+                update_job_submit=st.form_submit_button("Enregistrer l'intervention")
+            if update_job_submit:
+                try:
+                    sb.table("capax_work_orders").update({"status":new_job_status,"owner":new_job_owner.strip() or None,"description":new_job_note.strip()}).eq("id",chosen_job["id"]).execute()
+                    audit_public_event(sb,"CAPAX","UPDATE_WORK_ORDER",chosen_job["work_order_code"],new_job_status)
+                    st.success("Intervention mise à jour."); st.rerun()
+                except Exception as exc: st.error("Modification impossible : "+str(exc))
+
+elif page == "ORION · Analyse":
+    st.subheader("ORION · Analyse industrielle")
+    st.caption("Indicateurs calculés à partir des données synthétiques PILOT, événements, écarts et registres publics.")
+    sb = get_supabase_client()
+    live_nc, live_jobs = [], []
+    if sb is not None:
+        try: live_nc = sb.table("nexus_nonconformities").select("*").execute().data or []
+        except Exception: pass
+        try: live_jobs = sb.table("capax_work_orders").select("*").execute().data or []
+        except Exception: pass
+    total_orders = len(filtered)
+    late_orders = int(filtered["is_late"].sum()) if "is_late" in filtered else 0
+    completion_rate = (int((filtered["status"].astype(str).str.lower()=="completed").sum())/total_orders*100) if total_orders else 0
+    stop_minutes = float(duration_seconds(filtered_events.copy(),"started_at","ended_at").sum()/60) if not filtered_events.empty and {"started_at","ended_at"}.issubset(filtered_events.columns) else 0
+    nc_open = sum(1 for r in live_nc if r.get("status") not in ["Résolue","Clôturée"])
+    jobs_open = sum(1 for r in live_jobs if r.get("status") not in ["Terminée","Clôturée"])
+    k1,k2,k3,k4 = st.columns(4)
+    k1.metric("Ordres suivis",total_orders)
+    k2.metric("Taux terminés",f"{completion_rate:.1f}%")
+    k3.metric("Ordres en retard",late_orders)
+    k4.metric("Arrêts tracés",f"{stop_minutes:.0f} min")
+    k5,k6,k7=st.columns(3)
+    k5.metric("NC publiques ouvertes",nc_open)
+    k6.metric("Interventions CAPAX ouvertes",jobs_open)
+    k7.metric("Écarts PILOT",len(filtered_deviations))
+    st.markdown("#### Priorités de démonstration")
+    findings=[]
+    if late_orders: findings.append(f"{late_orders} ordre(s) sont signalés en retard selon les dates disponibles.")
+    if stop_minutes: findings.append(f"{stop_minutes:.0f} minute(s) d'arrêt sont calculées à partir des événements horodatés.")
+    if nc_open: findings.append(f"{nc_open} non-conformité(s) publique(s) restent non clôturées.")
+    if jobs_open: findings.append(f"{jobs_open} intervention(s) CAPAX restent ouvertes.")
+    if not findings: findings.append("Aucun signal prioritaire détecté dans le périmètre filtré, ou données insuffisantes.")
+    for finding in findings: st.info(finding)
+    st.markdown("#### Retards par atelier")
+    if not filtered.empty and "workshop_label" in filtered:
+        late_by=filtered.groupby("workshop_label",dropna=False).agg(ordres=("id","count"),retards=("is_late","sum")).reset_index()
+        st.bar_chart(late_by.set_index("workshop_label")[["ordres","retards"]])
+        st.dataframe(late_by,use_container_width=True,hide_index=True)
+    else: st.info("Pas de données d'atelier disponibles pour cette période.")
+    st.caption("ORION est un moteur descriptif : les signaux sont des règles simples, pas une prédiction ni une décision automatique. Données de démonstration uniquement.")
 
 else:
     st.subheader("Explorateur de données")
@@ -509,4 +701,4 @@ else:
     st.download_button("Télécharger en CSV",df.to_csv(index=False).encode("utf-8"),f"{chosen}.csv","text/csv")
 
 st.divider()
-st.caption("NEXUS Industrial · PILOT + Q-TRACE V1.6 · Données de démonstration synthétiques · Indicateurs calculés à partir des enregistrements disponibles")
+st.caption("NEXUS Industrial · PILOT + Q-TRACE + CAPAX + ORION V1.7 · Données de démonstration synthétiques · Indicateurs calculés à partir des enregistrements disponibles")
