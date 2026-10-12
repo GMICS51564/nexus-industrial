@@ -34,7 +34,7 @@ DB_PATH = Path(__file__).parent / "nexus_industrial_demo_v1_1.sqlite"
 
 st.markdown("### N E X U S  /  INDUSTRIAL INTELLIGENCE")
 st.title("NEXUS INDUSTRIAL")
-st.caption("PILOT V1.4  •  PRODUCTION PERFORMANCE & OPERATIONAL CONTROL")
+st.caption("PILOT + Q-TRACE V1.5  •  PRODUCTION & QUALITY CONTROL")
 
 st.warning("Démonstrateur pédagogique : les données sont synthétiques. Les indicateurs sont calculés à partir des enregistrements disponibles et ne doivent pas servir au pilotage d'une production réelle.")
 
@@ -82,6 +82,11 @@ deviations = load("deviation_records")
 workshops = load("workshops")
 islands = load("production_islands")
 workstations = load("workstations")
+inspections = load("inspections")
+inspection_results = load("inspection_results")
+nonconformities = load("nonconformities")
+dispositions = load("dispositions")
+action_items = load("action_items")
 
 if orders.empty:
     st.error("La table `production_orders` est absente ou vide.")
@@ -92,6 +97,9 @@ ops = parse_dates(ops, ["planned_start_at","planned_end_at"])
 executions = parse_dates(executions, ["started_at","ended_at"])
 events = parse_dates(events, ["started_at","ended_at"])
 deviations = parse_dates(deviations, ["detected_at"])
+inspections = parse_dates(inspections, ["started_at", "completed_at", "inspected_at"])
+nonconformities = parse_dates(nonconformities, ["detected_at", "created_at", "closed_at", "due_date"])
+action_items = parse_dates(action_items, ["start_date", "due_date", "completed_at"])
 time_records = parse_dates(time_records, ["started_at","ended_at"])
 qty_records = parse_dates(qty_records, ["recorded_at"])
 
@@ -203,7 +211,7 @@ filtered_exec = executions[executions["planned_operation_id"].astype(str).isin(o
 filtered_events = events[events["planned_operation_id"].astype(str).isin(op_ids)].copy() if not events.empty else pd.DataFrame()
 filtered_deviations = deviations[deviations["planned_operation_id"].astype(str).isin(op_ids)].copy() if not deviations.empty else pd.DataFrame()
 
-pages = ["Vue générale", "PILOT · Production", "Retards & écarts", "Arrêts", "Données brutes"]
+pages = ["Vue générale", "PILOT · Production", "Retards & écarts", "Arrêts", "Q-TRACE · Qualité", "Données brutes"]
 page = st.sidebar.radio("Navigation", pages)
 
 if page == "Vue générale":
@@ -290,6 +298,77 @@ elif page == "Arrêts":
             st.bar_chart(filtered_events.groupby("reason_code")["duration_minutes"].sum().to_frame("Minutes"))
     else:
         st.info("Aucun événement d'arrêt associé aux ordres sélectionnés.")
+
+elif page == "Q-TRACE · Qualité":
+    st.subheader("Q-TRACE · Surveillance qualité")
+    st.caption("Suivi des inspections et non-conformités enregistrées dans la base. Aucune donnée manquante n'est remplacée par une estimation.")
+
+    # Optional filters use only columns present in the current schema.
+    nc_view = nonconformities.copy()
+    if not nc_view.empty:
+        filter_cols = st.columns(3)
+        status_col = "status" if "status" in nc_view.columns else None
+        severity_col = "severity" if "severity" in nc_view.columns else None
+        if status_col:
+            status_values = sorted(nc_view[status_col].dropna().astype(str).unique())
+            chosen_nc_status = filter_cols[0].multiselect("Statut de non-conformité", status_values, default=status_values)
+            nc_view = nc_view[nc_view[status_col].astype(str).isin(chosen_nc_status)] if chosen_nc_status else nc_view.iloc[0:0]
+        if severity_col:
+            severity_values = sorted(nc_view[severity_col].dropna().astype(str).unique())
+            chosen_severity = filter_cols[1].multiselect("Gravité", severity_values, default=severity_values)
+            nc_view = nc_view[nc_view[severity_col].astype(str).isin(chosen_severity)] if chosen_severity else nc_view.iloc[0:0]
+        date_candidates = [c for c in ["detected_at", "created_at"] if c in nc_view.columns]
+        if date_candidates:
+            dcol = date_candidates[0]
+            valid = nc_view[dcol].dropna()
+            if not valid.empty:
+                qdate = filter_cols[2].date_input(
+                    "Défauts détectés après le",
+                    value=valid.min().date(),
+                    min_value=valid.min().date(),
+                    max_value=max(valid.max().date(), valid.min().date())
+                )
+                nc_view = nc_view[nc_view[dcol].isna() | (nc_view[dcol].dt.date >= qdate)]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Inspections enregistrées", len(inspections))
+    c2.metric("Non-conformités visibles", len(nc_view))
+    if not nc_view.empty and "status" in nc_view.columns:
+        open_mask = ~nc_view["status"].astype(str).str.lower().isin(["closed", "closed - verified", "resolved", "cloturee", "clôturée", "terminee", "terminée"])
+        c3.metric("Non-conformités non clôturées", int(open_mask.sum()))
+    else:
+        c3.metric("Non-conformités non clôturées", "—")
+
+    st.markdown("#### Registre des non-conformités")
+    if nc_view.empty:
+        st.info("Aucune non-conformité ne correspond aux filtres, ou aucune donnée n'est enregistrée.")
+    else:
+        preferred = ["reference_code", "description", "severity", "status", "detected_at", "due_date", "closed_at", "origin_type"]
+        cols = [c for c in preferred if c in nc_view.columns]
+        cols += [c for c in nc_view.columns if c not in cols and c not in ["id"]]
+        st.dataframe(nc_view[cols], use_container_width=True, hide_index=True)
+        st.download_button("Exporter les non-conformités filtrées en CSV", nc_view.to_csv(index=False).encode("utf-8"), "nexus_qtrace_nonconformities.csv", "text/csv")
+
+    st.markdown("#### Inspections")
+    if inspections.empty:
+        st.info("Aucune inspection disponible.")
+    else:
+        st.dataframe(inspections, use_container_width=True, hide_index=True)
+        st.download_button("Exporter les inspections en CSV", inspections.to_csv(index=False).encode("utf-8"), "nexus_qtrace_inspections.csv", "text/csv")
+
+    if not inspection_results.empty:
+        st.markdown("#### Résultats de contrôle")
+        st.dataframe(inspection_results, use_container_width=True, hide_index=True)
+
+    if not dispositions.empty:
+        st.markdown("#### Décisions et dispositions")
+        st.dataframe(dispositions, use_container_width=True, hide_index=True)
+
+    if not action_items.empty:
+        st.markdown("#### Actions correctives associées au système")
+        st.dataframe(action_items, use_container_width=True, hide_index=True)
+
+    st.info("Cette version est en consultation. Pour enregistrer de nouveaux défauts depuis l'application et conserver les modifications entre les redéploiements, nous ajouterons ensuite une base hébergée avec authentification et sauvegardes.")
 
 else:
     st.subheader("Explorateur de données")
